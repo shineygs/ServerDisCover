@@ -74,44 +74,23 @@ public class MdnsDiscover {
         }
 
         private volatile boolean running = false;
+        private WifiManager.MulticastLock multicastLock;
+        private ServiceListener listener;
 
         @Override
         public void run() {
             WifiManager wifiManager = (WifiManager) mContext.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             assert wifiManager != null;
-            WifiManager.MulticastLock multicastLock = wifiManager.createMulticastLock(getClass().getName());
+            multicastLock = wifiManager.createMulticastLock(getClass().getName());
             multicastLock.setReferenceCounted(false);
             multicastLock.acquire();//to receive multicast packets
             try {
-                ServiceListener listener = new JmdnsListener(mCallback);
-                boolean crash = false;
-                while (running) {
-                    try {
-                        if (crash) {
-                            Thread.sleep(3000L);
-                        }
-                        InetAddress addr = getLocalIpAddress(wifiManager);
-                        mJmdns = JmDNS.create(addr);
-                        mJmdns.addServiceListener(mServiceName, listener);
-                        Thread.sleep(3000L);
-                        crash = false;
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        crash = true;
-                    } finally {
-                        mJmdns.removeServiceListener(mServiceName, listener);
-                        try {
-                            mJmdns.close();
-                            Log.i(TAG, "run: jmdns close");
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                            crash = false;
-                        }
-                    }
-                }
-            } finally {
-                Log.i(TAG, "run: search end");
-                multicastLock.release();
+                listener = new JmdnsListener(mCallback);
+                InetAddress addr = getLocalIpAddress(wifiManager);
+                mJmdns = JmDNS.create(addr);
+                mJmdns.addServiceListener(mServiceName, listener);
+            }catch (Exception e){
+                e.printStackTrace();
             }
         }
 
@@ -121,8 +100,21 @@ public class MdnsDiscover {
             super.start();
         }
 
+        public void stopService() {
+            mJmdns.removeServiceListener(mServiceName, listener);
+            try {
+                mJmdns.close();
+                multicastLock.release();
+                Log.i(TAG, "run: search close");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+        }
+
         @Override
         public void interrupt() {
+            stopService();
             running = false;
             mCallback = null;
             super.interrupt();
@@ -140,16 +132,30 @@ public class MdnsDiscover {
             this.mCallback = mCallback;
         }
 
+        @Override
         public void serviceAdded(ServiceEvent ev) {
             Log.i(TAG, "serviceAdded: ");
             mJmdns.requestServiceInfo(ev.getType(), ev.getName(), 1);
         }
 
+        @Override
         public void serviceRemoved(ServiceEvent ev) {
             Log.i(TAG, "serviceRemoved: ");
-            jsonMap.remove(ev.getName());
+            if(jsonMap.containsKey(ev.getName())){
+                jsonMap.remove(ev.getName());
+                JSONObject jsonObj = toJsonObject(ev.getInfo());
+                if (mCallback != null) {
+                    if (jsonObj == null) {
+                        Log.w(TAG, "serviceResolved: jsonObj is null");
+                        return;
+                    }
+                    // 重开线程回调
+                    mCallback.onDeviceLose(jsonObj);
+                }
+            }
         }
 
+        @Override
         public void serviceResolved(ServiceEvent ev) {
             if (!jsonMap.containsKey(ev.getName())) {
                 // 新设备

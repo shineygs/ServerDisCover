@@ -5,4 +5,5 @@ import org.json.JSONObject;
 
 public interface MdnsCallback {
     void onDeviceFind(JSONObject jsonArray);
+    void onDeviceLose(JSONObject jsonArray);
 }
